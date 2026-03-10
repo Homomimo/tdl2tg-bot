@@ -73,6 +73,13 @@ docker-compose build --no-cache && docker-compose up -d
 docker-compose logs -f
 ```
 
+### 常用命令
+```bash
+docker-compose down #停止容器
+docker restart tdl2tg-bot #重启容器
+```
+
+
 ## 🛠️ 使用指南
 
 ### 基础命令
