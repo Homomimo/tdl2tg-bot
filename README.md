@@ -20,6 +20,7 @@
 ## 🚀 快速部署
 
 ### 前提条件
+- 已安装[TDL](https://docs.iyear.me/tdl/zh/getting-started/installation/)
 - 已安装 [Docker](https://docs.docker.com/engine/install/) 和 [Docker Compose](https://docs.docker.com/compose/install/)
 - 宿主机已安装 `tdl` 并配置执行权限：
   ```bash
