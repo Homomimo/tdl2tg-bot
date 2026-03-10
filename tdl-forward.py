@@ -46,8 +46,8 @@ START_MESSAGE_PUBLIC = (
 START_MESSAGE_ADMIN = (
     START_MESSAGE_PUBLIC + '\n\n'
     '📌 管理员命令:\n'
-    '/forwardto <ID> - 修改目标频道ID\n'
-    '/showto         - 查看目标频道ID\n'
+    '/forwardto <ID> - 修改接收频道ID\n'
+    '/showto         - 查看接收频道ID\n'
     '/flog           - 查看转发记录\n'
     '/flog clear     - 清除历史记录\n'
     '/restart        - 重启机器人\n'
