@@ -15,3 +15,20 @@ services:
       - ADMIN_IDS=1227176277
       - FORWARD_TO_CHAT_ID=1234567890
       - MONITOR_CHAT_IDS=源频道ID
+      - USER_MONITOR_ENABLED=1
+      - USER_SESSION_STRING=填入gen-session输出的字符串
+
+  gen-session:
+    build: .
+    container_name: telegram-tdl-forwarder-gen-session
+    profiles:
+      - tools
+    volumes:
+      - ./gen_telethon_session.py:/app/gen_telethon_session.py
+    environment:
+      - TZ=Asia/Shanghai
+      - API_ID=16612890
+      - API_HASH=c0fc7dab1acc44f2a2da55cba248d656
+    command: python3 -u gen_telethon_session.py
+    stdin_open: true
+    tty: true
