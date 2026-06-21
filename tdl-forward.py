@@ -188,11 +188,17 @@ class TaskQueue:
 
                     if ok:
                         await status_msg.edit(
-                            f"✅ 导出+转发成功 (范围)\n"                            f"源: {task.link}\n"                            f"范围: {task.message_ids[0]}-{task.message_ids[1]}\n"                            f"TO: {target_id}"                        )
+                            f"✅ 导出+转发成功 (范围)\n"
+                            f"源: {task.link}\n"
+                            f"范围: {task.message_ids[0]}-{task.message_ids[1]}\n"
+                            f"TO: {target_id}"
+                        )
                         task.status = TaskStatus.COMPLETED
                     else:
                         await status_msg.edit(
-                            f"❌ 转发失败\n"
+                            f"❌ 导出+转发失败 (范围)\n"
+                            f"源: {task.link}\n"
+                            f"范围: {task.message_ids[0]}-{task.message_ids[1]}\n"
                             f"错误: {output}"
                         )
                         task.status = TaskStatus.FAILED
@@ -225,27 +231,41 @@ class TaskQueue:
             "running": self.running
         }
 
-# 对管理员展示完整帮助，对普通用户只展示基础说明
-START_MESSAGE_PUBLIC = (
-    '🤖 机器人已启动！\n\n'
-    '👋 你好！我是消息转发助手\n\n'
-    '📌 支持两种输入方式：\n'
-    '1) 直接转发消息给我\n'
-    '2) 粘贴 https://t.me/xxx/123 链接\n\n'
-    '🚀 收到消息后会自动转发到目标频道'
-)
-
+# 管理员帮助说明
 START_MESSAGE_ADMIN = (
-    START_MESSAGE_PUBLIC + '\n\n'
-    '📌 管理员命令:\n'
-    '/forwardto <ID> - 修改目标频道ID\n'
-    '/showto         - 查看目标频道ID\n'
-    '/flog           - 查看转发记录\n'
-    '/flog clear     - 清除历史记录\n'
-    '/queue          - 查看转发队列\n'
-    '/export_range <Chat ID> <起始ID> <结束ID> - 导出ID范围并转发\n'
-    '/restart        - 重启机器人\n'
-    '/help           - 查看帮助'
+    '🤖 消息转发助手管理面板\n\n'
+    '【基础用法】\n'
+    '1. 直接转发频道/群消息给机器人\n'
+    '2. 发送公开或私有频道消息链接：\n'
+    '   https://t.me/channel_name/123\n'
+    '   https://t.me/c/123456789/123\n'
+    '3. 机器人会按队列克隆转发到当前目标频道\n\n'
+    '【管理员命令】\n'
+    '/forwardto <频道ID>\n'
+    '  设置或修改目标频道，使用 tdl 可识别的裸 ID，不需要加 -100 前缀\n'
+    '  示例：/forwardto 1234567890\n\n'
+    '/showto\n'
+    '  查看当前目标频道 ID\n\n'
+    '/queue\n'
+    '  查看当前等待中的转发任务数量\n\n'
+    '/flog\n'
+    '  查看最近 10 条转发记录和失败原因\n\n'
+    '/flog clear\n'
+    '  清空本地转发记录文件\n\n'
+    '/export_range <来源> <起始消息ID> <结束消息ID>\n'
+    '  从指定 Chat 导出一段消息并转发到目标频道\n'
+    '  来源支持裸 Chat ID、t.me/c 频道链接或消息链接\n'
+    '  示例：/export_range 3482276715 100 200\n'
+    '  示例：/export_range https://t.me/c/3482276715 100 200\n'
+    '  示例：/export_range https://t.me/c/3482276715/100 https://t.me/c/3482276715/200\n\n'
+    '/restart\n'
+    '  重启机器人进程\n\n'
+    '/help\n'
+    '  显示本帮助\n\n'
+    '【注意事项】\n'
+    '- 目标频道必须先用 /forwardto 设置，或通过 FORWARD_TO_CHAT_ID 环境变量配置\n'
+    '- 机器人和 tdl 登录账号需要有源频道读取权限、目标频道发帖权限\n'
+    '- export_range 适合批量补发，消息 ID 范围不宜一次过大'
 )
 
 
@@ -268,6 +288,81 @@ def parse_chat_id(text: str) -> Optional[int]:
         return int(text.strip())
     except (ValueError, AttributeError):
         return None
+
+
+def strip_url_query(text: str) -> str:
+    return text.strip().split('?', 1)[0].rstrip('/')
+
+
+def parse_private_channel_link(text: str) -> tuple[Optional[int], Optional[int]]:
+    """解析 t.me/c/<chat_id>[/message_id] 链接。
+
+    返回: (chat_id, message_id)。频道链接没有 message_id 时返回 (chat_id, None)。
+    公开用户名链接无法得到 tdl 裸 Chat ID，因此不在这里解析。
+    """
+    link = strip_url_query(text)
+    match = re.match(r"https?://t\.me/c/(-?\d+)(?:/(\d+))?/?$", link)
+    if not match:
+        return None, None
+
+    chat_id = int(match.group(1))
+    message_id = int(match.group(2)) if match.group(2) else None
+    return chat_id, message_id
+
+
+def parse_export_range_args(parts: list[str]) -> tuple[Optional[int], Optional[int], Optional[int], Optional[str]]:
+    """解析 /export_range 参数。
+
+    支持:
+    - /export_range <Chat ID> <起始ID> <结束ID>
+    - /export_range <频道链接> <起始ID> <结束ID>
+    - /export_range <起始消息链接> <结束消息链接>
+    - /export_range <消息链接> <结束ID>
+    """
+    args = parts[1:]
+    if len(args) < 2:
+        return None, None, None, "missing"
+
+    first_chat_id, first_msg_id = parse_private_channel_link(args[0])
+
+    if first_chat_id is not None:
+        if first_msg_id is not None:
+            if len(args) < 2:
+                return None, None, None, "missing_end_id"
+
+            second_chat_id, second_msg_id = parse_private_channel_link(args[1])
+            if second_chat_id is not None:
+                if second_chat_id != first_chat_id:
+                    return None, None, None, "chat_mismatch"
+                if second_msg_id is None:
+                    return None, None, None, "missing_end_id"
+                return first_chat_id, first_msg_id, second_msg_id, None
+
+            end_id = parse_chat_id(args[1])
+            if end_id is None:
+                return None, None, None, "invalid_end_id"
+            return first_chat_id, first_msg_id, end_id, None
+
+        if len(args) < 3:
+            return None, None, None, "missing_range"
+        start_id = parse_chat_id(args[1])
+        end_id = parse_chat_id(args[2])
+        if start_id is None or end_id is None:
+            return None, None, None, "invalid_range_id"
+        return first_chat_id, start_id, end_id, None
+
+    if args[0].startswith(("http://t.me/", "https://t.me/")):
+        return None, None, None, "public_link_not_supported"
+
+    if len(args) < 3:
+        return None, None, None, "missing_range"
+
+    chat_id = parse_chat_id(args[0])
+    start_id = parse_chat_id(args[1])
+    end_id = parse_chat_id(args[2])
+    if chat_id is None or start_id is None or end_id is None:
+        return None, None, None, "invalid_range_id"
+    return chat_id, start_id, end_id, None
 
 
 ADMIN_IDS: list[int] = parse_admin_ids(os.getenv("ADMIN_IDS", ""))
@@ -597,21 +692,41 @@ class TelegramBot:
 
         if command == '/forwardto':
             if len(parts) < 2:
-                await event.respond("❌ 用法: /forwardto <频道ID>\n示例: /forwardto -1001234567890")
+                await event.respond(
+                    "❌ 缺少目标频道 ID\n\n"
+                    "用法：/forwardto <频道ID>\n"
+                    "示例：/forwardto 1234567890\n\n"
+                    "说明：频道 ID 使用 tdl 可识别的裸 ID，不需要加 -100 前缀；机器人和 tdl 账号需要具备发帖权限。"
+                )
                 return True
             new_id = parse_chat_id(parts[1])
             if new_id is None:
-                await event.respond("❌ 频道ID无效，请输入数字（通常以 -100 开头）")
+                await event.respond(
+                    "❌ 频道 ID 格式无效\n\n"
+                    "请只输入数字，不需要加 -100 前缀，例如：\n"
+                    "/forwardto 1234567890"
+                )
                 return True
             self.target_chat_id = new_id
-            await event.respond(f"✅ 目标频道ID已更新: {self.target_chat_id}")
+            await event.respond(
+                f"✅ 目标频道已更新\n"
+                f"当前目标频道 ID：{self.target_chat_id}\n\n"
+                "之后收到的有效消息会转发到该频道。"
+            )
             return True
 
         if command == '/showto':
             if self.target_chat_id is None:
-                await event.respond("ℹ️ 尚未设置目标频道ID，请使用 /forwardto <频道ID>")
+                await event.respond(
+                    "ℹ️ 尚未设置目标频道\n\n"
+                    "请使用以下命令设置：\n"
+                    "/forwardto 1234567890"
+                )
             else:
-                await event.respond(f"🎯 当前目标频道ID: {self.target_chat_id}")
+                await event.respond(
+                    f"🎯 当前目标频道 ID：{self.target_chat_id}\n\n"
+                    "所有新加入队列的任务都会转发到该频道。"
+                )
             return True
 
         if command == '/flog':
@@ -646,33 +761,81 @@ class TelegramBot:
             return True
 
         if command == '/queue':
-            queue_size = self.task_queue.queue.qsize()
-            if queue_size == 0:
-                await event.respond("📋 转发队列为空")
+            status = self.task_queue.get_queue_status()
+            queue_size = status["queue_size"]
+            current_task = status["current_task"]
+
+            if queue_size == 0 and not current_task:
+                await event.respond("📋 转发队列为空，当前没有正在处理或等待中的任务。")
                 return True
 
-            lines = ["📋 转发队列状态：\n", f"等待中: {queue_size}\n"]
+            lines = [
+                "📋 转发队列状态：\n",
+                f"运行状态：{'运行中' if status['running'] else '已停止'}\n",
+                f"等待中：{queue_size}\n",
+            ]
+            if current_task:
+                lines.extend([
+                    "\n正在处理：\n",
+                    f"状态：{current_task['status']}\n",
+                    f"来源：{current_task['link']}\n",
+                ])
             await event.respond("".join(lines))
             return True
 
         if command == '/export_range':
-            if len(parts) < 4:
-                await event.respond(
-                    "❌ 用法: /export_range <Chat ID> <起始ID> <结束ID>\n"
-                    "示例: /export_range 3482276715 100 200"
-                )
-                return True
-
-            try:
-                chat_id = int(parts[1])
-                start_id = int(parts[2])
-                end_id = int(parts[3])
-            except ValueError:
-                await event.respond("❌ ID格式错误，请输入数字")
+            chat_id, start_id, end_id, parse_error = parse_export_range_args(parts)
+            if parse_error:
+                error_tips = {
+                    "missing": (
+                        "❌ 缺少范围导出参数\n\n"
+                        "用法 1：/export_range <Chat ID> <起始消息ID> <结束消息ID>\n"
+                        "用法 2：/export_range <频道链接> <起始消息ID> <结束消息ID>\n"
+                        "用法 3：/export_range <起始消息链接> <结束消息链接>\n\n"
+                        "示例：\n"
+                        "/export_range 3482276715 100 200\n"
+                        "/export_range https://t.me/c/3482276715 100 200\n"
+                        "/export_range https://t.me/c/3482276715/100 https://t.me/c/3482276715/200"
+                    ),
+                    "missing_range": (
+                        "❌ 缺少起始或结束消息 ID\n\n"
+                        "频道链接后面还需要填写起始消息 ID 和结束消息 ID。\n"
+                        "示例：/export_range https://t.me/c/3482276715 100 200"
+                    ),
+                    "missing_end_id": (
+                        "❌ 缺少结束消息 ID\n\n"
+                        "使用消息链接作为起点时，需要再提供结束消息 ID 或结束消息链接。\n"
+                        "示例：/export_range https://t.me/c/3482276715/100 200"
+                    ),
+                    "invalid_end_id": (
+                        "❌ 结束消息 ID 格式错误\n\n"
+                        "结束位置请填写数字，或填写同一频道的消息链接。\n"
+                        "示例：/export_range https://t.me/c/3482276715/100 200"
+                    ),
+                    "invalid_range_id": (
+                        "❌ 参数格式错误\n\n"
+                        "Chat ID、起始消息 ID、结束消息 ID 必须是数字；也可以使用 t.me/c 私有频道链接。\n"
+                        "示例：/export_range 3482276715 100 200"
+                    ),
+                    "chat_mismatch": (
+                        "❌ 起始消息链接和结束消息链接不属于同一个频道\n\n"
+                        "请确认两个链接中的 Chat ID 一致。"
+                    ),
+                    "public_link_not_supported": (
+                        "❌ 公开用户名链接无法自动提取数字 Chat ID\n\n"
+                        "请改用 t.me/c/<Chat ID>/<消息ID> 链接，或手动填写 Chat ID。\n"
+                        "示例：/export_range 3482276715 100 200"
+                    ),
+                }
+                await event.respond(error_tips.get(parse_error, "❌ 参数解析失败，请检查 /export_range 用法。"))
                 return True
 
             if start_id > end_id:
-                await event.respond("❌ 起始ID不能大于结束ID")
+                await event.respond(
+                    "❌ 消息范围无效\n\n"
+                    "起始消息 ID 不能大于结束消息 ID。\n"
+                    "示例：/export_range 3482276715 100 200"
+                )
                 return True
 
             logger.info(f"处理 export_range 命令, chat_id: {chat_id}, range: {start_id}-{end_id}")
@@ -740,8 +903,10 @@ class TelegramBot:
 
         @self.client.on(events.NewMessage(pattern='/start'))
         async def start_handler(event):
-            msg = START_MESSAGE_ADMIN if event.sender_id in ADMIN_IDS else START_MESSAGE_PUBLIC
-            await event.respond(msg)
+            if event.sender_id in ADMIN_IDS:
+                await event.respond(START_MESSAGE_ADMIN)
+            else:
+                await event.respond("🤖 机器人已启动。请直接转发消息或发送 Telegram 消息链接。")
 
         @self.client.on(events.NewMessage)
         async def message_handler(event):
